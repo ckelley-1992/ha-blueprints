@@ -1,0 +1,104 @@
+homeassistant:
+  name: test
+  latitude: 42.36
+  longitude: -71.06
+  elevation: 10
+  unit_system: us_customary
+  time_zone: America/New_York
+
+input_boolean:
+  is_dark:
+  deck_triggered_with_motion:
+  deck_motion_paused:
+  shed_triggered_with_motion:
+  shed_motion_paused:
+  garage_triggered_with_motion:
+
+input_select:
+  deck_light_source:
+    options: &source_options
+      - Automation
+      - Software
+      - Wall switch
+  garage_light_source:
+    options: *source_options
+
+counter:
+  deck_toggle_counter:
+    initial: 0
+    step: 1
+  shed_toggle_counter:
+    initial: 0
+    step: 1
+
+timer:
+  deck_motion_hold:
+    restore: true
+  shed_motion_hold:
+    restore: true
+  garage_motion_hold:
+    restore: true
+
+# Relay-like lights (see custom_components/fakelight).
+light:
+  - platform: fakelight
+    names:
+      - Deck Wafer
+      - Shed Light
+      - Garage Light
+
+automation:
+  # Deck: every optional feature on.
+  - id: deck_motion_v3
+    alias: Deck Motion v3
+    use_blueprint:
+      path: ckelley/motion_light_min_on.yaml
+      input:
+        occupancy_sensor: binary_sensor.deck_motion_combined
+        lights:
+          - light.deck_wafer
+        owner_flag: input_boolean.deck_triggered_with_motion
+        hold_timer: timer.deck_motion_hold
+        min_on: {hours: 0, minutes: 0, seconds: 4}
+        clear_delay: {hours: 0, minutes: 0, seconds: 2}
+        on_conditions:
+          - condition: state
+            entity_id: input_boolean.is_dark
+            state: "on"
+        pause_toggle: input_boolean.deck_motion_paused
+        toggle_counter: counter.deck_toggle_counter
+        toggles_to_pause: 6
+        toggle_gap: 1
+        source_select: input_select.deck_light_source
+        wall_switch:
+          - binary_sensor.deck_wall_input
+  # Shed: pause, no status helper; sunrise trigger swapped for a test event.
+  - id: shed_motion_v3
+    alias: Shed Motion v3
+    use_blueprint:
+      path: ckelley/motion_light_testsunrise.yaml
+      input:
+        occupancy_sensor: binary_sensor.shed_motion
+        lights:
+          - light.shed_light
+        owner_flag: input_boolean.shed_triggered_with_motion
+        hold_timer: timer.shed_motion_hold
+        min_on: {hours: 0, minutes: 0, seconds: 4}
+        clear_delay: {hours: 0, minutes: 0, seconds: 2}
+        pause_toggle: input_boolean.shed_motion_paused
+        toggle_counter: counter.shed_toggle_counter
+        toggle_gap: 1
+  # Garage: no pause, status helper without a wall switch sensor, real sunrise trigger.
+  - id: garage_motion_v3
+    alias: Garage Motion v3
+    use_blueprint:
+      path: ckelley/motion_light_min_on.yaml
+      input:
+        occupancy_sensor: binary_sensor.garage_occupancy
+        lights:
+          - light.garage_light
+        owner_flag: input_boolean.garage_triggered_with_motion
+        hold_timer: timer.garage_motion_hold
+        min_on: {hours: 0, minutes: 0, seconds: 4}
+        clear_delay: {hours: 0, minutes: 0, seconds: 2}
+        source_select: input_select.garage_light_source

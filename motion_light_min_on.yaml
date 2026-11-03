@@ -1,0 +1,531 @@
+blueprint:
+  name: Motion light with minimum on-time and manual override
+  author: ckelley
+  source_url: https://github.com/ckelley-1992/ha-blueprints/blob/main/motion_light_min_on.yaml
+  description: >-
+    Turns lights on with motion and keeps them on for at least a minimum
+    time, then until the sensor has been clear for a delay.
+
+
+    The automation only turns off lights it turned on itself (tracked with an
+    ownership toggle). Lights turned on by hand (switch, app, voice, Apple
+    Home) are never turned off. To claim a light motion turned on, flick the
+    switch off and back on. Lights turned on by other Home Assistant
+    automations can optionally be adopted.
+
+
+    Turn-on conditions (such as "sun below horizon") only gate turning on;
+    turning off is never blocked. An unavailable sensor never counts as clear,
+    and a restart or reload never turns anything off.
+
+
+    Optional pause (e.g. entertaining): flip the switch quickly several times
+    and motion stops turning the lights on; the lights turn off to confirm. Do
+    it again to resume; the lights blink once. Pausing can also resume on its
+    own at sunrise.
+  domain: automation
+  input:
+    occupancy_sensor:
+      name: Motion / occupancy sensor
+      description: An Eve occupancy sensor or a binary_sensor group.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    lights:
+      name: Lights
+      description: On/off lights or switches this automation controls.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain:
+                - light
+                - switch
+    owner_flag:
+      name: Ownership toggle
+      description: >-
+        input_boolean that is on only while this automation owns the lights.
+        Use one per room and don't use it anywhere else.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+    hold_timer:
+      name: Minimum on-time timer
+      description: >-
+        Timer helper with "Restore" enabled. Use one per room and don't use it
+        anywhere else.
+      selector:
+        entity:
+          filter:
+            - domain: timer
+    min_on:
+      name: Minimum on-time
+      description: Lights stay on at least this long after this automation turns them on.
+      default:
+        hours: 0
+        minutes: 5
+        seconds: 0
+      selector:
+        duration: {}
+    clear_delay:
+      name: Clear delay
+      description: >-
+        After the minimum on-time, the sensor must stay clear this long before
+        the lights turn off.
+      default:
+        hours: 0
+        minutes: 1
+        seconds: 0
+      selector:
+        duration: {}
+    adopt_ha_automations:
+      name: Adopt lights turned on by other HA automations
+      description: >-
+        On: treat lights turned on by other Home Assistant automations or
+        scripts like a motion turn-on (turned off once the room is empty).
+        Off: leave them alone like a manual turn-on.
+      default: true
+      selector:
+        boolean: {}
+    on_conditions:
+      name: Turn-on conditions
+      description: >-
+        Only checked before turning on, e.g. a State condition on sun.sun =
+        below_horizon for outdoor lights. Never blocks turning off.
+      default: []
+      selector:
+        condition: {}
+    pause:
+      name: Pause (optional)
+      description: >-
+        Set the pause toggle to let motion be paused. Also set the counter to
+        pause / resume by flipping the switch quickly.
+      collapsed: true
+      input:
+        pause_toggle:
+          name: Pause toggle
+          description: >-
+            input_boolean that is on while motion is paused. Can also be
+            flipped from a dashboard or Siri.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+        toggle_counter:
+          name: Switch press counter
+          description: >-
+            Counter helper (initial 0, step 1, no maximum) used only by this
+            automation.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: counter
+        toggles_to_pause:
+          name: Presses to pause / resume
+          description: Each on or off counts as one press.
+          default: 6
+          selector:
+            number:
+              min: 3
+              max: 12
+              mode: box
+        toggle_gap:
+          name: Max seconds between presses
+          default: 3
+          selector:
+            number:
+              min: 1
+              max: 10
+              unit_of_measurement: s
+              mode: box
+        resume_at_sunrise:
+          name: Resume automatically at sunrise
+          default: true
+          selector:
+            boolean: {}
+    status:
+      name: Dashboard status (optional)
+      collapsed: true
+      input:
+        source_select:
+          name: Triggered by
+          description: >-
+            Dropdown helper with exactly these options: Automation, Software,
+            Wall switch. This automation sets it each time the lights turn on
+            or off.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_select
+        wall_switch:
+          name: Wall switch sensor
+          description: >-
+            The Shelly's switch input (binary_sensor), so a wall flip can be
+            told apart from Apple Home. Without it, Apple Home shows as Wall
+            switch.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+
+mode: queued
+max: 25
+
+variables:
+  lights_input: !input lights
+  light_list: "{{ [lights_input] if lights_input is string else lights_input }}"
+  owner_flag: !input owner_flag
+  adopt_ha_automations: !input adopt_ha_automations
+  pause_toggle: !input pause_toggle
+  toggle_counter: !input toggle_counter
+  toggles_to_pause: !input toggles_to_pause
+  toggle_gap: !input toggle_gap
+  resume_at_sunrise: !input resume_at_sunrise
+  has_pause: "{{ pause_toggle is string and pause_toggle | length > 0 }}"
+  has_counter: "{{ has_pause and toggle_counter is string and toggle_counter | length > 0 }}"
+  source_select: !input source_select
+  has_source: "{{ source_select is string and source_select | length > 0 }}"
+  wall_input: !input wall_switch
+  wall_list: "{{ ([wall_input] if wall_input is string else wall_input) | reject('eq', '') | list }}"
+
+triggers:
+  - trigger: state
+    entity_id: !input occupancy_sensor
+    to: "on"
+    id: motion
+  - trigger: state
+    entity_id: !input occupancy_sensor
+    to: "off"
+    for: !input clear_delay
+    id: clear
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input hold_timer
+    id: min_done
+  - trigger: state
+    entity_id: !input lights
+    from: "off"
+    to: "on"
+    id: light_on
+  - trigger: state
+    entity_id: !input lights
+    from: "on"
+    to:
+      - "off"
+      - unavailable
+    id: light_off
+  - trigger: homeassistant
+    event: start
+    id: reconcile
+  - trigger: event
+    event_type: automation_reloaded
+    id: reconcile
+  - trigger: sun
+    event: sunrise
+    id: resume
+  - trigger: state
+    entity_id: !input wall_switch
+    not_from:
+      - unavailable
+      - unknown
+    not_to:
+      - unavailable
+      - unknown
+    id: wall
+
+actions:
+  # Who changed the light: this automation ("ours"), a person ("manual"), or
+  # another automation. Our helpers carry the context of the run that sent a
+  # command. HA keeps tagging a light with its last command's context for 5 s,
+  # so a second change under the same context, or a change under our context
+  # that we didn't ask for, is a person at the switch.
+  - variables:
+      source: >-
+        {%- if trigger.id not in ['light_on', 'light_off'] -%}
+          none
+        {%- else -%}
+          {%- set c = trigger.to_state.context -%}
+          {%- set fresh = c.id != trigger.from_state.context.id -%}
+          {%- set flag = states[owner_flag] -%}
+          {%- set blink = has_pause and is_state(pause_toggle, 'off')
+                and c.id == states[pause_toggle].context.id -%}
+          {%- if blink or (fresh and c.id == flag.context.id
+                and (trigger.to_state.state == 'on') == (flag.state == 'on')) -%}
+            ours
+          {%- elif c.parent_id is none or not fresh or c.id == flag.context.id -%}
+            manual
+          {%- else -%}
+            automation
+          {%- endif -%}
+        {%- endif -%}
+      # With a wall switch sensor, did it change around this light change?
+      # (The Shelly reports the input and the relay separately.)
+      wall_recent: >-
+        {{ trigger.id in ['light_on', 'light_off'] and wall_list | count > 0
+           and expand(wall_list) | selectattr('last_changed', 'ge',
+               trigger.to_state.last_changed - timedelta(seconds=1)) | list | count > 0 }}
+
+  - choose:
+      # Motion with every light off: take ownership, then turn on.
+      - conditions:
+          - condition: trigger
+            id: motion
+          - "{{ light_list | select('is_state', 'on') | list | count == 0 }}"
+          - "{{ not has_pause or not is_state(pause_toggle, 'on') }}"
+          - condition: and
+            conditions: !input on_conditions
+        sequence:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input owner_flag
+          - action: homeassistant.turn_on
+            target:
+              entity_id: !input lights
+            continue_on_error: true
+          - wait_template: "{{ light_list | select('is_state', 'on') | list | count > 0 }}"
+            timeout: "00:00:10"
+            continue_on_timeout: true
+          - if:
+              - "{{ wait.completed }}"
+            then:
+              - action: timer.start
+                target:
+                  entity_id: !input hold_timer
+                data:
+                  duration: !input min_on
+            else:
+              # Lights never came on (offline?): don't keep a stale claim.
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: !input owner_flag
+
+      # Sensor clear long enough: turn off only if we own the lights and the
+      # minimum on-time has passed.
+      - conditions:
+          - condition: trigger
+            id: clear
+          - condition: state
+            entity_id: !input owner_flag
+            state: "on"
+          - condition: state
+            entity_id: !input hold_timer
+            state: idle
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: !input lights
+            continue_on_error: true
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input owner_flag
+
+      # Minimum on-time passed: turn off only if the sensor has already been
+      # clear long enough; otherwise the clear trigger handles it later.
+      - conditions:
+          - condition: trigger
+            id: min_done
+          - condition: state
+            entity_id: !input owner_flag
+            state: "on"
+          - condition: state
+            entity_id: !input occupancy_sensor
+            state: "off"
+            for: !input clear_delay
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: !input lights
+            continue_on_error: true
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input owner_flag
+
+      # A light came on that we didn't turn on. A person's turn-on is honored
+      # (released); another automation's is adopted. Nothing is adopted while
+      # paused, or if the light is already off again by the time this queued
+      # run gets to it.
+      - conditions:
+          - condition: trigger
+            id: light_on
+          - "{{ source != 'ours' }}"
+        sequence:
+          - if:
+              - "{{ source == 'automation' and adopt_ha_automations and not wall_recent }}"
+              - "{{ not has_pause or not is_state(pause_toggle, 'on') }}"
+              - "{{ is_state(trigger.entity_id, 'on') }}"
+            then:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: !input owner_flag
+              - action: timer.start
+                target:
+                  entity_id: !input hold_timer
+                data:
+                  duration: !input min_on
+            else:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: !input owner_flag
+              - action: timer.cancel
+                target:
+                  entity_id: !input hold_timer
+
+      # Any light went off (or dropped offline): release ownership, so whatever
+      # turns it back on next is judged fresh.
+      - conditions:
+          - condition: trigger
+            id: light_off
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input owner_flag
+          - action: timer.cancel
+            target:
+              entity_id: !input hold_timer
+
+      # Someone flipped the wall switch: whatever the light does now is theirs.
+      - conditions:
+          - condition: trigger
+            id: wall
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input owner_flag
+          - action: timer.cancel
+            target:
+              entity_id: !input hold_timer
+
+      # Startup / reload: drop a stale claim, or re-arm the timer for lights we
+      # still own. Never turns anything off.
+      - conditions:
+          - condition: trigger
+            id: reconcile
+          - condition: state
+            entity_id: !input owner_flag
+            state: "on"
+        sequence:
+          - if:
+              - "{{ light_list | select('is_state', 'off') | list | count == light_list | count }}"
+            then:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: !input owner_flag
+              - action: timer.cancel
+                target:
+                  entity_id: !input hold_timer
+            else:
+              - if:
+                  - condition: state
+                    entity_id: !input hold_timer
+                    state: idle
+                then:
+                  - action: timer.start
+                    target:
+                      entity_id: !input hold_timer
+                    data:
+                      duration: !input min_on
+
+      # Sunrise ends a pause that was left on overnight.
+      - conditions:
+          - condition: trigger
+            id: resume
+          - "{{ resume_at_sunrise and has_pause and is_state(pause_toggle, 'on') }}"
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: "{{ pause_toggle }}"
+
+  # Rapid manual on/off presses pause or resume motion. Only presses by a
+  # person count, so this automation's own on/offs and blinks never do. With a
+  # wall switch sensor, its flips are counted directly.
+  - if:
+      - >-
+        {{ has_counter and (trigger.id == 'wall' if wall_list | count > 0
+           else source == 'manual' and trigger.to_state.state in ['on', 'off']) }}
+    then:
+      - if:
+          - "{{ (now() - states[toggle_counter].last_changed).total_seconds() > toggle_gap }}"
+        then:
+          - action: counter.reset
+            target:
+              entity_id: "{{ toggle_counter }}"
+      - action: counter.increment
+        target:
+          entity_id: "{{ toggle_counter }}"
+      - if:
+          - "{{ states(toggle_counter) | int(0) >= toggles_to_pause }}"
+        then:
+          - action: counter.reset
+            target:
+              entity_id: "{{ toggle_counter }}"
+          - if:
+              - "{{ is_state(pause_toggle, 'on') }}"
+            then:
+              # Resume, and blink once to confirm. The queued light_on run sees
+              # the light already off again, so the blink is never adopted.
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: "{{ pause_toggle }}"
+              - action: homeassistant.turn_on
+                target:
+                  entity_id: !input lights
+                continue_on_error: true
+              - delay:
+                  milliseconds: 500
+              - action: homeassistant.turn_off
+                target:
+                  entity_id: !input lights
+                continue_on_error: true
+            else:
+              # Pause: let go of the lights and turn them off to confirm. Only
+              # lights that are on get a command, so the next flips aren't
+              # tagged with this run's context.
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: "{{ pause_toggle }}"
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: !input owner_flag
+              - action: timer.cancel
+                target:
+                  entity_id: !input hold_timer
+              - if:
+                  - "{{ light_list | select('is_state', 'on') | list | count > 0 }}"
+                then:
+                  - action: homeassistant.turn_off
+                    target:
+                      entity_id: "{{ light_list | select('is_state', 'on') | list }}"
+                    continue_on_error: true
+
+  # Dashboard status: what triggered the last on/off. A person without a wall
+  # flip is software (HA app, Apple Home, Siri). A person's change next to a
+  # wall flip is left to the wall trigger. With no wall switch sensor set, Apple
+  # Home carries no HA user and can't be told apart from the wall.
+  - if:
+      - "{{ has_source and trigger.id in ['light_on', 'light_off', 'wall'] }}"
+      - "{{ trigger.to_state.state in ['on', 'off'] }}"
+      - "{{ not (source == 'manual' and wall_recent) }}"
+    then:
+      - action: input_select.select_option
+        target:
+          entity_id: "{{ source_select }}"
+        data:
+          option: >-
+            {%- if trigger.id == 'wall' -%}
+              Wall switch
+            {%- elif source != 'manual' -%}
+              Automation
+            {%- elif trigger.to_state.context.user_id or wall_list | count > 0 -%}
+              Software
+            {%- else -%}
+              Wall switch
+            {%- endif -%}
+        continue_on_error: true
